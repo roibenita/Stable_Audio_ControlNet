@@ -1,0 +1,13 @@
+{
+    "dataset_type": "audio_dir",
+    "datasets": [
+        {
+            "id": "fma_small",
+            "path": "/home/rbenita/Projects/Text_to_audio_with_controlnet/stable_audio_open_controlnet/datasets/fma_small/dataset/fma_small/000",
+            "custom_metadata_module": "/home/rbenita/Projects/Text_to_audio_with_controlnet/stable_audio_open_controlnet/stable-audio-tools/stable_audio_tools/configs/dataset_configs/custom_metadata/custom_md_example.py",
+            "prompts_dict_path": "/home/rbenita/Projects/Text_to_audio_with_controlnet/stable_audio_open_controlnet/datasets/fma_small/track_dict.pkl"
+
+        }
+    ],
+    "random_crop": true
+}
