@@ -4,6 +4,8 @@ import os
 import torch
 import pytorch_lightning as pl
 import random
+import argparse
+from argparse import Namespace
 
 
 from stable_audio_tools.data.dataset import create_dataloader_from_config
@@ -25,8 +27,33 @@ class ModelConfigEmbedderCallback(pl.Callback):
 
 def main():
 
-    args = get_all_args()
+    # args = get_all_args()
 
+
+    args_dict = {
+    "seed": "1",
+    "model_config": "/home/rbenita/Projects/Text_to_audio_with_controlnet/stable_audio_open_controlnet/stable-audio-tools/stable_audio_tools/csa/csa_model_config_controlnet.json",
+    "dataset_config": "/home/rbenita/Projects/Text_to_audio_with_controlnet/stable_audio_open_controlnet/stable-audio-tools/stable_audio_tools/configs/dataset_configs/local_dataset_ControlNet.json",
+    "pretrained_ckpt_path": "/home/rbenita/Projects/Text_to_audio_with_controlnet/stable_audio_open_controlnet/stable-audio-tools/pretrained_elemnets/Model/model.safetensors",
+    # "remove_pretransform_weight_nor" : "post_load",
+    "batch_size": 1,
+    "num_workers": 4,
+    "remove_pretransform_weight_norm" : "",
+    "ckpt_path" : '',
+    "pretransform_ckpt_path" : '',
+    "name" : 'StableAudioOpen_with_ControlNet',
+    "save_dir" : "/home/rbenita/Projects/Text_to_audio_with_controlnet/stable_audio_open_controlnet/stable-audio-tools/stable_audio_tools/csa/save_dir",
+    "checkpoint_every" : 1000,
+    "strategy" : "",
+    "num_gpus" : 1,
+    "accum_batches": 1,
+    "num_nodes" : 1,
+    "precision":  "16-mixed" ,
+    "gradient_clip_val" : 0
+
+    }
+
+    args = Namespace(**args_dict)
     seed = args.seed
 
     # Set a different seed for each process if using SLURM
