@@ -680,7 +680,8 @@ class TransformerBlock(nn.Module):
             x = self.ff(x)
             x = x * torch.sigmoid(1 - gate_ff)
             x = x + residual
-
+            
+        #### Roi: in our case we dont use adaLN therefore getting here: ####
         else:
             x = x + self.self_attn(self.pre_norm(x), mask = mask, rotary_pos_emb = rotary_pos_emb)
 

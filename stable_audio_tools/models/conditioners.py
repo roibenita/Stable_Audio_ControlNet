@@ -6,6 +6,12 @@ import string
 import typing as tp
 import gc
 
+##Roi:
+from pedalboard.io import AudioFile
+import torchaudio
+from torchaudio import transforms as T
+
+
 from .adp import NumberEmbedder
 from ..inference.utils import set_audio_channels
 from .factory import create_pretransform_from_config
@@ -31,7 +37,41 @@ class Conditioner(nn.Module):
 
     def forward(self, x: tp.Any) -> tp.Any:
         raise NotImplementedError()
-    
+
+class AudioControlConditioner(Conditioner):
+    def __init__(self, 
+                output_dim: int,
+                ):
+        super().__init__(output_dim, output_dim)
+
+# class AudioControlConditioner(Conditioner):
+#     def __init__(self, 
+#                 output_dim: int,
+#                 ):
+#         super().__init__(output_dim, output_dim)
+
+
+    # def forward(self, audio_control_path, device=None) -> tp.Any:
+    #     ext = audio_control_path.split(".")[-1]
+
+    #     if ext == "mp3":
+    #         with AudioFile(audio_control_path) as f:
+    #             audio = f.read(f.frames)
+    #             audio = torch.from_numpy(audio)
+    #             in_sr = f.samplerate
+    #     else:
+    #         audio, in_sr = torchaudio.load(audio_control_path, format=ext)
+
+    #     if in_sr != self.sr:
+    #         resample_tf = T.Resample(in_sr, self.sr)
+    #         audio = resample_tf(audio)
+
+    #     return audio
+
+    def forward(self, audio_control, device=None) -> tp.Any:
+            
+            return audio_control
+
 class IntConditioner(Conditioner):
     def __init__(self, 
                 output_dim: int,
@@ -545,6 +585,9 @@ def create_multi_conditioner_from_conditioning_config(config: tp.Dict[str, tp.An
             conditioners[id] = PhonemeConditioner(**conditioner_config)
         elif conditioner_type == "lut":
             conditioners[id] = TokenizerLUTConditioner(**conditioner_config)
+        ##Roi:##
+        elif conditioner_type == "audio_control":
+            conditioners[id] = AudioControlConditioner(**conditioner_config)
         elif conditioner_type == "pretransform":
             sample_rate = conditioner_config.pop("sample_rate", None)
             assert sample_rate is not None, "Sample rate must be specified for pretransform conditioners"
