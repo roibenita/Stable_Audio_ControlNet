@@ -69,7 +69,28 @@ def copy_state_dict(model, state_dict):
                 # backwards compatibility for serialized parameters
                 state_dict[key] = state_dict[key].data
             model_state_dict[key] = state_dict[key]
-        
+    
+    for key in model_state_dict:
+        if key in state_dict:
+            continue
+        else:
+            modified_key = key.replace("controlnet", "transformer")
+            if modified_key in state_dict and state_dict[modified_key].shape == model_state_dict[key].shape:
+                if isinstance(state_dict[modified_key], torch.nn.Parameter):
+                    # backwards compatibility for serialized parameters
+                    state_dict[modified_key] = state_dict[modified_key].data
+                model_state_dict[key] = state_dict[modified_key]
+            else: 
+                modified_key = key.replace("model.model.controlnet.prepare_conditioned_audio", "pretransform.model")
+                if modified_key in state_dict and state_dict[modified_key].shape == model_state_dict[key].shape:
+                    if isinstance(state_dict[modified_key], torch.nn.Parameter):
+                        # backwards compatibility for serialized parameters
+                        state_dict[modified_key] = state_dict[modified_key].data
+                    model_state_dict[key] = state_dict[modified_key]
+                
+                else:
+                    print(key)
+
     model.load_state_dict(model_state_dict, strict=False)
 
 def create_optimizer_from_config(optimizer_config, parameters):
@@ -90,7 +111,10 @@ def create_optimizer_from_config(optimizer_config, parameters):
         optimizer = FusedAdam(parameters, **optimizer_config["config"])
     else:
         optimizer_fn = getattr(torch.optim, optimizer_type)
+        ##ROI:
         optimizer = optimizer_fn(parameters, **optimizer_config["config"])
+        # optimizer = optimizer_fn(filter(lambda p: p.requires_grad, parameters), **optimizer_config["config"])
+        
     return optimizer
 
 def create_scheduler_from_config(scheduler_config, optimizer):
