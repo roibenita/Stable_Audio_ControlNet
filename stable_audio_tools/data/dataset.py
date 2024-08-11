@@ -17,6 +17,8 @@ from pedalboard.io import AudioFile
 from torchaudio import transforms as T
 from typing import Optional, Callable, List
 
+### Roi: 
+import pickle
 from .utils import Stereo, Mono, PhaseFlipper, PadCrop_Normalized_T
 
 AUDIO_KEYS = ("flac", "wav", "mp3", "m4a", "ogg", "opus")
@@ -108,16 +110,32 @@ def get_audio_filenames(
         filenames.extend(files)
     return filenames
 
+
+
+def get_file_name_without_extension(relative_path):
+    # Extract the base name (file name with extension) from the path
+    base_name = os.path.basename(relative_path)
+    # Split the base name into name and extension and return the name part
+    file_name_without_extension = os.path.splitext(base_name)[0]
+     # Remove leading zeros
+    file_name_cleaned = file_name_without_extension.lstrip('0')
+    return file_name_cleaned
+
+
 class LocalDatasetConfig:
     def __init__(
         self,
         id: str,
         path: str,
-        custom_metadata_fn: Optional[Callable[[str], str]] = None
+        custom_metadata_fn: Optional[Callable[[str], str]] = None,
+        ###rOI:
+        prompts_dict = None
     ):
         self.id = id
         self.path = path
         self.custom_metadata_fn = custom_metadata_fn
+        ###rOI:
+        self.prompts_dict = prompts_dict
 
 class SampleDataset(torch.utils.data.Dataset):
     def __init__(
@@ -156,6 +174,9 @@ class SampleDataset(torch.utils.data.Dataset):
             self.filenames.extend(get_audio_filenames(config.path, keywords))
             if config.custom_metadata_fn is not None:
                 self.custom_metadata_fns[config.path] = config.custom_metadata_fn
+            ## Roi: here to add a dictionary ##
+            self.prompt_dict = config.prompts_dict
+            ######
 
         print(f'Found {len(self.filenames)} files')
 
@@ -175,6 +196,7 @@ class SampleDataset(torch.utils.data.Dataset):
             audio = resample_tf(audio)
 
         return audio
+
 
     def __len__(self):
         return len(self.filenames)
@@ -213,7 +235,13 @@ class SampleDataset(torch.utils.data.Dataset):
             end_time = time.time()
 
             info["load_time"] = end_time - start_time
-
+            ### Roi ####
+            # info["control_signal"] = audio_filename
+            # info["control_signal"] = audio
+            # info["control_signal"] =  self.load_file(audio_filename)
+            ## Here maybe I can also add a prompt (and not by external function)
+            info["prompt"] = self.prompt_dict[get_file_name_without_extension(info["relpath"])]
+            ##########
             for custom_md_path in self.custom_metadata_fns.keys():
                 if custom_md_path in audio_filename:
                     custom_metadata_fn = self.custom_metadata_fns[custom_md_path]
@@ -585,12 +613,22 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
                 spec.loader.exec_module(metadata_module)                
 
                 custom_metadata_fn = metadata_module.get_custom_metadata
+            
+            ## Roi: here to add a dictionary ##
+            prompts_dict = None
+            prompt_dict_path = audio_dir_config.get("prompts_dict_path", None)
+            if prompt_dict_path is not None:
+                with open(prompt_dict_path, 'rb') as f:
+                    prompts_dict = pickle.load(f)
+            #####
 
             configs.append(
                 LocalDatasetConfig(
                     id=audio_dir_config["id"],
                     path=audio_dir_path,
-                    custom_metadata_fn=custom_metadata_fn
+                    custom_metadata_fn=custom_metadata_fn,
+                    ##Roi:
+                    prompts_dict=prompts_dict
                 )
             )
 
