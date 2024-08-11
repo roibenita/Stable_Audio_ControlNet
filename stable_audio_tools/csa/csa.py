@@ -43,9 +43,11 @@ class prepare_conditioned_audio(nn.Module):
         audio_sample_size = self.sample_size
         # in_sr, init_audio = init_audio
         in_sr = self.model_sample_rate
-        x = self.prepare_audio(x, in_sr, self.model_sample_rate, target_length=audio_sample_size, target_channels=self.io_channels)
+        device = x.device
 
-        # x = self.prepare_audio(x, in_sr, self.model_sample_rate, target_length=audio_sample_size, target_channels=self.io_channels, device=device)
+        # x = self.prepare_audio(x, in_sr, self.model_sample_rate, target_length=audio_sample_size, target_channels=self.io_channels)
+
+        x = self.prepare_audio(x, in_sr, self.model_sample_rate, target_length=audio_sample_size, target_channels=self.io_channels, device=device)
         # x = self.prepare_audio(x, init_audio, in_sr, target_sr=model.sample_rate, target_length=audio_sample_size, target_channels=self.io_channels, device=device)
 
         x = self.encoder(x)
