@@ -39,7 +39,7 @@ def main():
     "seed": "1",
     "model_config": "stable_audio_ControlNet/stable_audio_tools/csa/csa_model_config_controlnet_Synchformer.json",
     "dataset_config": "stable_audio_ControlNet/stable_audio_tools/configs/dataset_configs/local_dataset_ControlNet_Clip_AudioCaps_Synchformer_train_2_padded_216.json",
-    "pretrained_ckpt_path": "/home/rbenita/pretrained_elemnets/Model/model.safetensors",
+    "pretrained_ckpt_path": "/pretrained_elemnets/Model/model.safetensors",
     # "remove_pretransform_weight_nor" : "post_load",
     "batch_size": 8,
     "num_workers": 4,
