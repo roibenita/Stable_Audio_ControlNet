@@ -11,50 +11,19 @@ from ..models.dit import *
 from .utils import zero_module, TimestepEmbedSequential
 from ..models.blocks import FourierFeatures
 # from ..models.autoencoders import create_encoder_from_config
+import torch.nn.functional as F
+
 
 class prepare_conditioned_audio(nn.Module):
-    # def __init__(self, encoder_model, pre_transform_io_channels, batch_size, dim_in, model_sample_rate ):
     def __init__(self, encoder_config, pre_transform_io_channels, dim_in, model_sample_rate ):
         super().__init__()
         self.io_channels = pre_transform_io_channels
-        self.prepare_audio = prepare_audio
-        
-        if encoder_config:
-            from ..models.autoencoders import create_encoder_from_config
-        self.encoder = create_encoder_from_config(encoder_config)
-        # self.encoder = encoder_model
-        # self.repeat = repeat(batch_size, 1, 1)
-        ## TODO: Bring the information about the output channles of the encoder
-        # self.preprocess_conv_init = nn.Conv1d(self.io_channels*2, self.io_channels, 1, bias=False)
-        self.preprocess_conv = nn.Conv1d(self.io_channels*2, self.io_channels*2, 1, bias=False)
+        self.preprocess_conv_control = nn.Conv1d(self.io_channels, self.io_channels, 1, bias=False)
         self.model_sample_rate = model_sample_rate
         self.sample_size = 2097152
-        # self.io_channels = model.pretransform.io_channels
-        # self.prepare_audio = prepare_audio
-        # self.encoder = model.pretransform.encode
-        # self.repeat = repeat(batch_size, 1, 1)
-        # self.preprocess_conv = nn.Conv1d(dim_in, dim_in, 1, bias=False)
-
-        for param in self.encoder.parameters():
-            param.requires_grad = False
 
     def forward(self,x):
-        
-        audio_sample_size = self.sample_size
-        # in_sr, init_audio = init_audio
-        in_sr = self.model_sample_rate
-        device = x.device
-
-        # x = self.prepare_audio(x, in_sr, self.model_sample_rate, target_length=audio_sample_size, target_channels=self.io_channels)
-
-        x = self.prepare_audio(x, in_sr, self.model_sample_rate, target_length=audio_sample_size, target_channels=self.io_channels, device=device)
-        # x = self.prepare_audio(x, init_audio, in_sr, target_sr=model.sample_rate, target_length=audio_sample_size, target_channels=self.io_channels, device=device)
-
-        x = self.encoder(x)
-        ### Im not sure i need here the repeat ###
-        # x = self.repeat(x)
-        # x = self.preprocess_conv_init(x)
-        x = self.preprocess_conv(x) + x
+        x = self.preprocess_conv_control(x) + x
         x = rearrange(x, "b c t -> b t c")
         return x
 
@@ -63,9 +32,10 @@ class ControlledContinuousTransformer(ContinuousTransformer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        for param in self.layers.parameters():
+        ### Roi: Return
+        for param in self.parameters():
             param.requires_grad = False
-        # self.layers.requires_grad = False
+
 
     # @torch.no_grad()
     def forward(
@@ -80,68 +50,88 @@ class ControlledContinuousTransformer(ContinuousTransformer):
             only_mid_control=False,
             **kwargs
         ):
-        with torch.no_grad():
+        # with torch.no_grad():
 
-            batch, seq, device = *x.shape[:2], x.device
+        batch, seq, device = *x.shape[:2], x.device
+        info = {
+            "hidden_states": [],
+        }
+        x = self.project_in(x)
+        if prepend_embeds is not None:
+            prepend_length, prepend_dim = prepend_embeds.shape[1:]
 
-            info = {
-                "hidden_states": [],
-            }
+            assert prepend_dim == x.shape[-1], 'prepend dimension must match sequence dimension'
 
-            x = self.project_in(x)
+            x = torch.cat((prepend_embeds, x), dim = -2)
 
-            if prepend_embeds is not None:
-                prepend_length, prepend_dim = prepend_embeds.shape[1:]
+            if prepend_mask is not None or mask is not None:
+                mask = mask if mask is not None else torch.ones((batch, seq), device = device, dtype = torch.bool)
+                prepend_mask = prepend_mask if prepend_mask is not None else torch.ones((batch, prepend_length), device = device, dtype = torch.bool)
 
-                assert prepend_dim == x.shape[-1], 'prepend dimension must match sequence dimension'
+                mask = torch.cat((prepend_mask, mask), dim = -1)
 
-                x = torch.cat((prepend_embeds, x), dim = -2)
+            # Attention layers 
 
-                if prepend_mask is not None or mask is not None:
-                    mask = mask if mask is not None else torch.ones((batch, seq), device = device, dtype = torch.bool)
-                    prepend_mask = prepend_mask if prepend_mask is not None else torch.ones((batch, prepend_length), device = device, dtype = torch.bool)
+            if self.rotary_pos_emb is not None:
+                rotary_pos_emb = self.rotary_pos_emb.forward_from_seq_len(x.shape[1])
+            else:
+                rotary_pos_emb = None
 
-                    mask = torch.cat((prepend_mask, mask), dim = -1)
+            if self.use_sinusoidal_emb or self.use_abs_pos_emb:
+                x = x + self.pos_emb(x)
 
-                # Attention layers 
+        # Iterate over the transformer layers (pop from the first layer)
+        for idx, layer in enumerate(self.layers):
+            if not(idx == 0):
+                x = x + control_sig.pop(0)
 
-                if self.rotary_pos_emb is not None:
-                    rotary_pos_emb = self.rotary_pos_emb.forward_from_seq_len(x.shape[1])
-                else:
-                    rotary_pos_emb = None
+            x = checkpoint(layer, x, rotary_pos_emb = rotary_pos_emb, global_cond=global_cond, **kwargs)
+    
+            if return_info:
+                info["hidden_states"].append(x)
 
-                if self.use_sinusoidal_emb or self.use_abs_pos_emb:
-                    x = x + self.pos_emb(x)
-
-            # flip the order of the controlnet architecture:
-            # control_reverse = control_sig.reverse()
-
-
-            # Iterate over the transformer layers
+        ### Adding the output of the last layer: ###    
+        x = x + control_sig.pop(0)
+        if return_info:
+                info["hidden_states"].append(x)
 
 
-            for idx, layer in enumerate(self.layers):
-                if not(idx == 0):
-                    x = x + control_sig.pop(0)
-                    # x = torch.cat([x, control_sig.pop(0)], dim=1)
-                #x = layer(x, rotary_pos_emb = rotary_pos_emb, global_cond=global_cond, **kwargs)
-                x = checkpoint(layer, x, rotary_pos_emb = rotary_pos_emb, global_cond=global_cond, **kwargs)
+        x = self.project_out(x)
+
+        if return_info:
+            return x, info
+        return x
+
+
+#Third arch = First offer - Mine - With batch norm and dropout
+
+class prepare_control_Synchformer(nn.Module):
+    def __init__(self, io_channels, dropout=0.15):
+        super().__init__()
+        self.nn_1 = nn.Linear(768, 768, bias=False)
+        self.nn_2 = nn.Linear(768, 1024, bias=False)
         
-                if return_info:
-                    info["hidden_states"].append(x)
+        # Activation functions
+        self.relu_1 = nn.ReLU()
+        self.relu_2 = nn.ReLU()
+        
+        # LayerNorm and Dropout layers
+        self.layernorm_1 = nn.LayerNorm(768)
+        self.layernorm_2 = nn.LayerNorm(1024)
+        self.dropout = nn.Dropout(dropout)
 
-            ### Adding the output of the last layer: ###    
-            x = x + control_sig.pop(0)
-            if return_info:
-                    info["hidden_states"].append(x)
-
-
-            x = self.project_out(x)
-
-            if return_info:
-                return x, info
-            
-            return x
+    def forward(self, x):
+        x = self.nn_1(x)
+        x = self.relu_1(x)
+        x = self.layernorm_1(x)
+        x = self.dropout(x)
+        
+        x = self.nn_2(x)
+        x = self.relu_2(x)
+        x = self.layernorm_2(x)
+        x = self.dropout(x)
+        
+        return x
 
 class ControlNet(nn.Module):
     # class ContinuousTransformer(nn.Module):
@@ -182,10 +172,6 @@ class ControlNet(nn.Module):
         # self.project_in = nn.Linear(dim_in, dim, bias=False) if dim_in is not None else nn.Identity()
         # self.project_out = nn.Linear(dim, dim_out, bias=False) if dim_out is not None else nn.Identity()
 
-        # if self.encoder_config:
-        #     from ..models.autoencoders import create_encoder_from_config
-
-        # self.encoder = create_encoder_from_config(self.encoder_config)
         if rotary_pos_emb:
             self.rotary_pos_emb = RotaryEmbedding(max(dim_heads // 2, 32))
         else:
@@ -199,31 +185,38 @@ class ControlNet(nn.Module):
         if use_abs_pos_emb:
             self.pos_emb = AbsolutePositionalEmbedding(self.dim, abs_pos_emb_max_length)
         
-        #### first zeroconv: for the conditioned input ####
-        #### TODO: from where to bring the 1024? ####
-        self.zero_convs_init = self.make_zero_conv(1024)
+
         self.zero_convs = nn.ModuleList([])
 
-        #### prepare the condtioned audio ####
-        # self.prepare_conditioned_audio = prepare_conditioned_audio(encoder_model, io_channels, batch_size, self.dim_in, self.sample_rate )
+        #### prepare the condtioned control ####
+        
+        self.prepare_conditioned_Synchformer =  prepare_control_Synchformer(io_channels)
 
-        self.prepare_conditioned_audio = prepare_conditioned_audio(self.encoder_config, io_channels, self.dim_in, self.sample_rate )
+        # self.prepare_conditioned_audio = prepare_conditioned_audio(self.encoder_config, io_channels, self.dim_in, self.sample_rate )
 
-        # #### adding preprcess to the conditioned audio signal #### :
-        # # in_sr, init_audio = init_audio
 
-        # # io_channels = model.io_channels
-
-        # io_channels = model.pretransform.io_channels
-
-        # # Prepare the initial audio for use by the model
-        # init_audio = prepare_audio(init_audio, in_sr=in_sr, target_sr=model.sample_rate, target_length=audio_sample_size, target_channels=io_channels, device=device)
-        # init_audio = model.pretransform.encode(init_audio)
-        # init_audio = init_audio.repeat(batch_size, 1, 1)
 
         self.project_in = nn.Linear(self.dim_in, self.dim, bias=False) if self.dim_in is not None else nn.Identity()
-        self.project_in_control = nn.Linear(self.dim_in*2, self.dim, bias=False) if self.dim_in is not None else nn.Identity()
+        # self.project_in_control = nn.Linear(self.dim_in*2, self.dim, bias=False) if self.dim_in is not None else nn.Identity()
+        
+        
+        ####
+        ## I want it to be learnable because the project in from the x_t is getting noisy elements and here different input.
+        # self.project_in_control = nn.Linear(self.dim_in, self.dim, bias=False) if self.dim_in is not None else nn.Identity()
+        # Roi changed zero:       
+        # self.project_in_control = zero_module(nn.Linear(self.dim_in, self.dim, bias=False) if self.dim_in is not None else nn.Identity())
+        
+        ## it was that one for intensity:
+        # self.project_in_intensity = zero_module(nn.Linear(self.dim_in, self.dim, bias=False) if self.dim_in is not None else nn.Identity())
+        
+        # self.project_in_intensity = nn.Linear(self.dim_in, self.dim, bias=False) if self.dim_in is not None else nn.Identity()
+        # self.project_in_intensity = zero_module(nn.Linear(self.dim_in, 1, bias=False) if self.dim_in is not None else nn.Identity())
 
+        ## Third Arch - First offer - Mine  
+
+        self.project_in_Synchformer = zero_module(nn.Linear(1024, self.dim, bias=False) if self.dim_in is not None else nn.Identity())
+
+        ####
 
         for i in range(depth):
             self.layers.append(
@@ -240,22 +233,24 @@ class ControlNet(nn.Module):
                     **kwargs
                 )
             )
-            ## TODO" understand from where to bring the 1024
-            self.zero_convs.append(self.make_zero_conv(1025))
-
-
+            # self.zero_convs.append(self.make_zero_conv(1025))
+            ## Roi: changed zero: 
+            self.zero_convs.append(self.make_zero_nn(self.dim))
+            
         for param in self.project_in.parameters():
             param.requires_grad = False
         
 
-
-
-
-    
     def make_zero_conv(self, channels):
-        ## TODO: pat attentuon to add another variable as dim in the future
-        return TimestepEmbedSequential(zero_module(conv_nd(1, channels, channels, 1, padding=0)))
 
+        return (zero_module(conv_nd(1, channels, channels, 1, padding=0)))
+        # return TimestepEmbedSequential(zero_module(nn.Linear(channels, channels)))
+    
+    ## Roi: change zero conv
+    def make_zero_nn(self, channels):
+        # return (zero_module(nn.Linear(1, channels, channels, 1, padding=0)))
+        return (zero_module(nn.Linear(channels, channels, bias=False)))
+    
     def forward(
         self,
         x,
@@ -268,7 +263,7 @@ class ControlNet(nn.Module):
         **kwargs
     ):
 
-    ########  The preprocess of x and concat with "global cond" ########
+    ########  The preprocess of x  ########
         batch, seq, device = *x.shape[:2], x.device
 
         info = {
@@ -277,36 +272,32 @@ class ControlNet(nn.Module):
 
         x_prepend = self.project_in(x)
 
-        # if prepend_embeds is not None:
-        #     prepend_length, prepend_dim = prepend_embeds.shape[1:]
-
-        #     assert prepend_dim == x_prepend.shape[-1], 'prepend dimension must match sequence dimension'
-
-        #     x_prepend = torch.cat((prepend_embeds, x_prepend), dim = -2)
-
-        #     if prepend_mask is not None or mask is not None:
-        #         mask = mask if mask is not None else torch.ones((batch, seq), device = device, dtype = torch.bool)
-        #         prepend_mask = prepend_mask if prepend_mask is not None else torch.ones((batch, prepend_length), device = device, dtype = torch.bool)
-
-        #         mask = torch.cat((prepend_mask, mask), dim = -1)
         #############################################
     
         ######## The preprocess of the conditional audio: #######
-        guided_hint =  self.prepare_conditioned_audio(hint)
+        guided_hint =  self.prepare_conditioned_Synchformer(hint)
 
         batch, seq, device = *guided_hint.shape[:2], guided_hint.device
         # info = {
         #     "hidden_states": [],
         # }
 
-        guided_hint =  self.project_in_control(guided_hint)
-        guided_hint = self.zero_convs_init(guided_hint)
-
+        # guided_hint =  self.project_in_intensity(guided_hint)
+        
+        guided_hint = self.project_in_Synchformer(guided_hint)
+        
+        # guided_hint = guided_hint.repeat(1, 1024, 1)
+        
+        ## the padding is 1024-240=784
+        # guided_hint = F.pad(guided_hint, (0, 0, 0, 784))
+        
+        ## In case of 216 the padding is: the padding is 1024-216=808
+        guided_hint = F.pad(guided_hint, (0, 0, 0, 808))
         #########################################################
 
-        ###### Summing both signals: x, cond_audio and concat with the global_info #####
+        ###### Summing both signals: x, cond_audio and concat them with the global_info #####
 
-        assert guided_hint.shape == x_prepend.shape, f"Both signals have different dimentiins. {guided_hint.shape} , {x_prepend.shape}"
+        # assert guided_hint.shape == x_prepend.shape, f"Both signals have different dimentiins. {guided_hint.shape} , {x_prepend.shape}"
 
         summed_signal = guided_hint + x_prepend
 
@@ -322,51 +313,65 @@ class ControlNet(nn.Module):
                 prepend_mask = prepend_mask if prepend_mask is not None else torch.ones((batch, prepend_length), device = device, dtype = torch.bool)
 
                 mask = torch.cat((prepend_mask, mask), dim = -1)
+
+    ########################################################
+
+        #### Defining the Rotary by the sumed signal
+
+        
+        # ### Now the rotary: 
+        if self.rotary_pos_emb is not None:
+            rotary_pos_emb = self.rotary_pos_emb.forward_from_seq_len(summed_signal.shape[1])
+        else:
+            rotary_pos_emb = None
+
+        if self.use_sinusoidal_emb or self.use_abs_pos_emb:
+            summed_signal = summed_signal + self.pos_emb(summed_signal)
+        ########################################################
         
         ########################################################
+
+        #### Defining the Rotary. For now - It is By the original conrol signal #####
+        ### For succeedding in using just the original control, I should make 
+        ### a new signal of 1025 with the cntrol and global concat. im not sure
+        ## if it is matter. but still doing so.
 
         # if prepend_embeds is not None:
         #     prepend_length, prepend_dim = prepend_embeds.shape[1:]
 
         #     assert prepend_dim == guided_hint.shape[-1], 'prepend dimension must match sequence dimension'
 
-        #     guided_hint = torch.cat((prepend_embeds, guided_hint), dim = -2)
+        #     guided_hint_cat_global = torch.cat((prepend_embeds, guided_hint), dim = -2)
 
         #     if prepend_mask is not None or mask is not None:
         #         mask = mask if mask is not None else torch.ones((batch, seq), device = device, dtype = torch.bool)
         #         prepend_mask = prepend_mask if prepend_mask is not None else torch.ones((batch, prepend_length), device = device, dtype = torch.bool)
 
         #         mask = torch.cat((prepend_mask, mask), dim = -1)
-
-        ##### Defining the Rotary. For now - It is By the original conrol signal #####
-        #### For succeedding in using just the original control, Ishould make 
-        #### a new signal of 1025 with the cntrol and global concat. im not sure
-        ### if it is matter. but still doing so.
-
-        if prepend_embeds is not None:
-            prepend_length, prepend_dim = prepend_embeds.shape[1:]
-
-            assert prepend_dim == guided_hint.shape[-1], 'prepend dimension must match sequence dimension'
-
-            guided_hint_cat_global = torch.cat((prepend_embeds, guided_hint), dim = -2)
-
-            if prepend_mask is not None or mask is not None:
-                mask = mask if mask is not None else torch.ones((batch, seq), device = device, dtype = torch.bool)
-                prepend_mask = prepend_mask if prepend_mask is not None else torch.ones((batch, prepend_length), device = device, dtype = torch.bool)
-
-                mask = torch.cat((prepend_mask, mask), dim = -1)
         
         ### Now the rotary: 
-        if self.rotary_pos_emb is not None:
-            rotary_pos_emb = self.rotary_pos_emb.forward_from_seq_len(guided_hint_cat_global.shape[1])
-        else:
-            rotary_pos_emb = None
+        # if self.rotary_pos_emb is not None:
+        #     rotary_pos_emb = self.rotary_pos_emb.forward_from_seq_len(guided_hint_cat_global.shape[1])
+        # else:
+        #     rotary_pos_emb = None
 
-        if self.use_sinusoidal_emb or self.use_abs_pos_emb:
-            guided_hint_cat_global = guided_hint_cat_global + self.pos_emb(guided_hint_cat_global)
-        #################################
+        # if self.use_sinusoidal_emb or self.use_abs_pos_emb:
+        #     guided_hint_cat_global = guided_hint_cat_global + self.pos_emb(guided_hint_cat_global)
+        ################################
         
         outs = []
+
+        for layer, zero_conv in zip(self.layers, self.zero_convs):
+   
+            summed_signal = checkpoint(layer, summed_signal, rotary_pos_emb = rotary_pos_emb, global_cond=global_cond, **kwargs)
+        
+            outs.append(zero_conv(summed_signal))
+
+        return outs
+    
+
+
+
         # h = x.type(self.dtype)
 
         # Iterate over the transformer layers
@@ -392,17 +397,6 @@ class ControlNet(nn.Module):
         
         #     outs.append(zero_conv(cur_sig))
 
-
-
-
-
-        for layer, zero_conv in zip(self.layers, self.zero_convs):
-   
-            summed_signal = checkpoint(layer, summed_signal, rotary_pos_emb = rotary_pos_emb, global_cond=global_cond, **kwargs)
-        
-            outs.append(zero_conv(summed_signal))
-
-        return outs
 
         # for layer in self.layers:
 
@@ -436,173 +430,192 @@ class ControlDiffusionTransformer(DiffusionTransformer):
 
 ### For now, because i need to change inner lines in init,
 ### I just defined it from the begginning.
-### TODO: make sure the inherit is ok
+
     def __init__(self,
-            controlnet_config,
-            only_specific_control, 
-            io_channels=32, 
-            patch_size=1,
-            embed_dim=768,
-            cond_token_dim=0,
-            project_cond_tokens=True,
-            global_cond_dim=0,
-            project_global_cond=True,
-            input_concat_dim=0,
-            prepend_cond_dim=0,
-            depth=12,
-            num_heads=8,
-            transformer_type: tp.Literal["x-transformers", "continuous_transformer", "controled_continuous_transformer"] = "controled_continuous_transformer",
-            global_cond_type: tp.Literal["prepend", "adaLN"] = "prepend",
-            **kwargs):
+        controlnet_config,
+        only_specific_control, 
+        io_channels=32, 
+        patch_size=1,
+        embed_dim=768,
+        cond_token_dim=0,
+        project_cond_tokens=True,
+        global_cond_dim=0,
+        project_global_cond=True,
+        input_concat_dim=0,
+        prepend_cond_dim=0,
+        depth=12,
+        num_heads=8,
+        transformer_type: tp.Literal["x-transformers", "continuous_transformer", "controled_continuous_transformer"] = "controled_continuous_transformer",
+        global_cond_type: tp.Literal["prepend", "adaLN"] = "prepend",
+        **kwargs):
 
-            # super(nn.Module).__init__()
-            nn.Module.__init__(self)
-            # super().__init__(self)
+        # super(nn.Module).__init__()
+        nn.Module.__init__(self)
+        # super().__init__(self)
 
-            ### Roi: #####
-            ### initializing the control mid 
-            self.control_model_config = controlnet_config
-            # self.control_model = instantiate_from_config(control_stage_config)
-            self.only_spesific_control = only_specific_control
-            self.control_scales = [1.0] * 13
-            #######
+        ### Roi: #####
+        self.control_model_config = controlnet_config
+        self.only_spesific_control = only_specific_control
+        # self.control_scales = [1.0] * 13
+        #######
 
-            self.cond_token_dim = cond_token_dim
+        self.cond_token_dim = cond_token_dim
 
-            # Timestep embeddings
-            timestep_features_dim = 256
+        # Timestep embeddings
+        timestep_features_dim = 256
 
-            self.timestep_features = FourierFeatures(1, timestep_features_dim)
+        self.timestep_features = FourierFeatures(1, timestep_features_dim)
 
-            self.to_timestep_embed = nn.Sequential(
-                nn.Linear(timestep_features_dim, embed_dim, bias=True),
+ 
+
+        self.to_timestep_embed = nn.Sequential(
+            nn.Linear(timestep_features_dim, embed_dim, bias=True),
+            nn.SiLU(),
+            nn.Linear(embed_dim, embed_dim, bias=True),
+        )
+
+   
+
+
+        if cond_token_dim > 0:
+            # Conditioning tokens
+
+            cond_embed_dim = cond_token_dim if not project_cond_tokens else embed_dim
+            self.to_cond_embed = nn.Sequential(
+                nn.Linear(cond_token_dim, cond_embed_dim, bias=False),
                 nn.SiLU(),
-                nn.Linear(embed_dim, embed_dim, bias=True),
+                nn.Linear(cond_embed_dim, cond_embed_dim, bias=False)
             )
 
-            if cond_token_dim > 0:
-                # Conditioning tokens
+          
+        else:
+            cond_embed_dim = 0
 
-                cond_embed_dim = cond_token_dim if not project_cond_tokens else embed_dim
-                self.to_cond_embed = nn.Sequential(
-                    nn.Linear(cond_token_dim, cond_embed_dim, bias=False),
-                    nn.SiLU(),
-                    nn.Linear(cond_embed_dim, cond_embed_dim, bias=False)
+        if global_cond_dim > 0:
+            # Global conditioning
+            global_embed_dim = global_cond_dim if not project_global_cond else embed_dim
+            self.to_global_embed = nn.Sequential(
+                nn.Linear(global_cond_dim, global_embed_dim, bias=False),
+                nn.SiLU(),
+                nn.Linear(global_embed_dim, global_embed_dim, bias=False)
+            )
+          
+        if prepend_cond_dim > 0:
+            # Prepend conditioning
+            self.to_prepend_embed = nn.Sequential(
+                nn.Linear(prepend_cond_dim, embed_dim, bias=False),
+                nn.SiLU(),
+                nn.Linear(embed_dim, embed_dim, bias=False)
+            )
+           
+
+        self.input_concat_dim = input_concat_dim
+
+        dim_in = io_channels + self.input_concat_dim
+
+        self.patch_size = patch_size
+
+        # Transformer
+
+        self.transformer_type = transformer_type
+
+        self.global_cond_type = global_cond_type
+
+        if self.transformer_type == "x-transformers":
+            self.transformer = ContinuousTransformerWrapper(
+                dim_in=dim_in * patch_size,
+                dim_out=io_channels * patch_size,
+                max_seq_len=0, #Not relevant without absolute positional embeds
+                attn_layers = Encoder(
+                    dim=embed_dim,
+                    depth=depth,
+                    heads=num_heads,
+                    attn_flash = True,
+                    cross_attend = cond_token_dim > 0,
+                    dim_context=None if cond_embed_dim == 0 else cond_embed_dim,
+                    zero_init_branch_output=True,
+                    use_abs_pos_emb = False,
+                    rotary_pos_emb=True,
+                    ff_swish = True,
+                    ff_glu = True,
+                    **kwargs
                 )
-            else:
-                cond_embed_dim = 0
+            )
 
-            if global_cond_dim > 0:
-                # Global conditioning
-                global_embed_dim = global_cond_dim if not project_global_cond else embed_dim
-                self.to_global_embed = nn.Sequential(
-                    nn.Linear(global_cond_dim, global_embed_dim, bias=False),
-                    nn.SiLU(),
-                    nn.Linear(global_embed_dim, global_embed_dim, bias=False)
-                )
+        elif self.transformer_type == "continuous_transformer":
 
-            if prepend_cond_dim > 0:
-                # Prepend conditioning
-                self.to_prepend_embed = nn.Sequential(
-                    nn.Linear(prepend_cond_dim, embed_dim, bias=False),
-                    nn.SiLU(),
-                    nn.Linear(embed_dim, embed_dim, bias=False)
-                )
+            global_dim = None
 
-            self.input_concat_dim = input_concat_dim
+            if self.global_cond_type == "adaLN":
+                # The global conditioning is projected to the embed_dim already at this point
+                global_dim = embed_dim
 
-            dim_in = io_channels + self.input_concat_dim
+            self.transformer = ContinuousTransformer(
+                dim=embed_dim,
+                depth=depth,
+                dim_heads=embed_dim // num_heads,
+                dim_in=dim_in * patch_size,
+                dim_out=io_channels * patch_size,
+                cross_attend = cond_token_dim > 0,
+                cond_token_dim = cond_embed_dim,
+                global_cond_dim=global_dim,
+                **kwargs
+            )
+        ### Roi ####
+        elif self.transformer_type == "controled_continuous_transformer":
 
-            self.patch_size = patch_size
+            global_dim = None
 
-            # Transformer
-
-            self.transformer_type = transformer_type
-
-            self.global_cond_type = global_cond_type
-
-            if self.transformer_type == "x-transformers":
-                self.transformer = ContinuousTransformerWrapper(
-                    dim_in=dim_in * patch_size,
-                    dim_out=io_channels * patch_size,
-                    max_seq_len=0, #Not relevant without absolute positional embeds
-                    attn_layers = Encoder(
-                        dim=embed_dim,
-                        depth=depth,
-                        heads=num_heads,
-                        attn_flash = True,
-                        cross_attend = cond_token_dim > 0,
-                        dim_context=None if cond_embed_dim == 0 else cond_embed_dim,
-                        zero_init_branch_output=True,
-                        use_abs_pos_emb = False,
-                        rotary_pos_emb=True,
-                        ff_swish = True,
-                        ff_glu = True,
-                        **kwargs
-                    )
-                )
-
-            elif self.transformer_type == "continuous_transformer":
-
-                global_dim = None
-
-                if self.global_cond_type == "adaLN":
+            if self.global_cond_type == "adaLN":
                     # The global conditioning is projected to the embed_dim already at this point
                     global_dim = embed_dim
 
-                self.transformer = ContinuousTransformer(
-                    dim=embed_dim,
-                    depth=depth,
-                    dim_heads=embed_dim // num_heads,
-                    dim_in=dim_in * patch_size,
-                    dim_out=io_channels * patch_size,
-                    cross_attend = cond_token_dim > 0,
-                    cond_token_dim = cond_embed_dim,
-                    global_cond_dim=global_dim,
-                    **kwargs
-                )
-            ### Roi ####
-            elif self.transformer_type == "controled_continuous_transformer":
+            self.transformer = ControlledContinuousTransformer(
+                dim=embed_dim,
+                depth=depth,
+                dim_heads=embed_dim // num_heads,
+                dim_in=dim_in * patch_size,
+                dim_out=io_channels * patch_size,
+                cross_attend = cond_token_dim > 0,
+                cond_token_dim = cond_embed_dim,
+                global_cond_dim=global_dim,
+                **kwargs
+            )
+        #######
 
-                global_dim = None
+        else:
+            raise ValueError(f"Unknown transformer type: {self.transformer_type}")
 
-                if self.global_cond_type == "adaLN":
-                        # The global conditioning is projected to the embed_dim already at this point
-                        global_dim = embed_dim
-
-                self.transformer = ControlledContinuousTransformer(
-                    dim=embed_dim,
-                    depth=depth,
-                    dim_heads=embed_dim // num_heads,
-                    dim_in=dim_in * patch_size,
-                    dim_out=io_channels * patch_size,
-                    cross_attend = cond_token_dim > 0,
-                    cond_token_dim = cond_embed_dim,
-                    global_cond_dim=global_dim,
-                    **kwargs
-                )
-            #######
-
-            else:
-                raise ValueError(f"Unknown transformer type: {self.transformer_type}")
-
-            self.preprocess_conv = nn.Conv1d(dim_in, dim_in, 1, bias=False)
-            nn.init.zeros_(self.preprocess_conv.weight)
-            self.postprocess_conv = nn.Conv1d(io_channels, io_channels, 1, bias=False)
-            nn.init.zeros_(self.postprocess_conv.weight)
+        self.preprocess_conv = nn.Conv1d(dim_in, dim_in, 1, bias=False)
+        nn.init.zeros_(self.preprocess_conv.weight)
+        self.postprocess_conv = nn.Conv1d(io_channels, io_channels, 1, bias=False)
+        nn.init.zeros_(self.postprocess_conv.weight)
 
 
-            self.controlnet = ControlNet(    
-                    dim=embed_dim,
-                    depth=depth,
-                    dim_heads=embed_dim // num_heads,
-                    dim_in=dim_in * patch_size,
-                    dim_out=io_channels * patch_size,
-                    cross_attend = cond_token_dim > 0,
-                    cond_token_dim = cond_embed_dim,
-                    global_cond_dim=global_dim,
-                    **controlnet_config.get('config', None), 
-                    **kwargs )
+        ### Roi: Return
+
+        for param in self.parameters():
+            param.requires_grad = False
+        # for param in self.postprocess_conv.parameters():
+        #     param.requires_grad = True
+
+        ### Only the Controlnet should required grad ###
+
+        self.controlnet = ControlNet(    
+                dim=embed_dim,
+                depth=depth,
+                dim_heads=embed_dim // num_heads,
+                dim_in=dim_in * patch_size,
+                dim_out=io_channels * patch_size,
+                cross_attend = cond_token_dim > 0,
+                cond_token_dim = cond_embed_dim,
+                global_cond_dim=global_dim,
+                **controlnet_config.get('config', None), 
+                **kwargs )
+
+        print("hellow")
+
+    
 
     def _forward(
         self, 
@@ -694,6 +707,7 @@ class ControlDiffusionTransformer(DiffusionTransformer):
             output = self.transformer(x, context=cross_attn_cond, mask=mask, context_mask=cross_attn_cond_mask, **extra_args, **kwargs)
 
         elif self.transformer_type == "controled_continuous_transformer":
+            # control_outs = [c * scale for c, scale in zip(control_outs, self.control_scales)]
             output = self.transformer(x, control_outs, prepend_embeds=prepend_inputs, context=cross_attn_cond, context_mask=cross_attn_cond_mask, mask=mask, prepend_mask=prepend_mask, return_info=return_info, **extra_args, **kwargs)
 
 
@@ -760,6 +774,10 @@ class ControlDiffusionTransformer(DiffusionTransformer):
             batch_inputs = torch.cat([x, x], dim=0)
             batch_timestep = torch.cat([t, t], dim=0)
 
+            ### roi: In that case we make the batch bigger for CFG, therefore we need twice thecontrol signal also.
+            batch_control_signal = torch.cat([control_signal , control_signal], dim=0)
+            
+            ### roi: In that case we make the batch bigger for CFG, therefore we need twice the global signal which is related to the timing .
             if global_embed is not None:
                 batch_global_cond = torch.cat([global_embed, global_embed], dim=0)
             else:
@@ -773,7 +791,7 @@ class ControlDiffusionTransformer(DiffusionTransformer):
             batch_cond = None
             batch_cond_masks = None
             
-            # Handle CFG for cross-attention conditioning
+            # Handle CFG for cross-attention conditioning (here we gee to the text conditioning)
             if cross_attn_cond is not None:
 
                 null_embed = torch.zeros_like(cross_attn_cond, device=cross_attn_cond.device)
@@ -790,6 +808,7 @@ class ControlDiffusionTransformer(DiffusionTransformer):
                     batch_cond = torch.cat([cross_attn_cond, negative_cross_attn_cond], dim=0)
 
                 else:
+                    ## here one with the text and the other without the text
                     batch_cond = torch.cat([cross_attn_cond, null_embed], dim=0)
 
                 if cross_attn_cond_mask is not None:
@@ -816,6 +835,7 @@ class ControlDiffusionTransformer(DiffusionTransformer):
             batch_output = self._forward(
                 batch_inputs, 
                 batch_timestep, 
+                conotrol_signal = batch_control_signal,
                 cross_attn_cond=batch_cond, 
                 cross_attn_cond_mask=batch_cond_masks, 
                 mask = batch_masks, 

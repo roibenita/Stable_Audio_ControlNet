@@ -1,0 +1,12 @@
+{
+    "dataset_type": "audio_dir",
+    "datasets": [
+        {
+            "id": "fma_small",
+            "path": "/home/rbenita/Dataset_proxy/Video_Audio_Text/AudioCaps/all_data_set/train_2/short_audio_files",
+            "prompts_dict_path": "/home/rbenita/Projects/stable-audio-tools-Synchformer-cond/dataset/dict_clip_AudioCaps_unnormelized_Synchformer_train_2_padded_1_216_768.pkl"
+
+        }
+    ],
+    "random_crop": true
+}

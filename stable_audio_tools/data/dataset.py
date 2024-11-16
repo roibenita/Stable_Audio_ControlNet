@@ -121,6 +121,15 @@ def get_file_name_without_extension(relative_path):
     file_name_cleaned = file_name_without_extension.lstrip('0')
     return file_name_cleaned
 
+def get_file_name_clip_implementation(relative_path):
+    # Extract the base name (file name with extension) from the path
+    base_name = os.path.basename(relative_path)
+    # Split the base name into name and extension and return the name part
+    file_name_without_extension = os.path.splitext(base_name)[0]
+     # Remove leading zeros
+    # file_name_cleaned = file_name_without_extension.lstrip('0')
+    return file_name_without_extension
+
 
 class LocalDatasetConfig:
     def __init__(
@@ -136,6 +145,25 @@ class LocalDatasetConfig:
         self.custom_metadata_fn = custom_metadata_fn
         ###rOI:
         self.prompts_dict = prompts_dict
+
+### Roi Intensity: ###
+
+def calc_intensity_length(sample_size, frame_length = 2048, hop_length = 512):
+    y = np.zeros(sample_size)
+    energy = np.array([
+        np.sum(np.abs(y[i:i+frame_length])**2)
+        for i in range(0, len(y), hop_length)
+    ])
+
+    # # Normalize energy to match the length of the waveform
+    # energy_normalized = np.interp(np.arange(0, len(y), 128), 
+    #                           np.arange(0, len(y), hop_length), 
+    #                           energy)
+
+
+
+    return energy.shape[0]
+
 
 class SampleDataset(torch.utils.data.Dataset):
     def __init__(
@@ -178,6 +206,9 @@ class SampleDataset(torch.utils.data.Dataset):
             self.prompt_dict = config.prompts_dict
             ######
 
+        ### Adding intensity: ###
+        # self.intensity_len = calc_intensity_length(sample_size)
+
         print(f'Found {len(self.filenames)} files')
 
     def load_file(self, filename):
@@ -203,7 +234,9 @@ class SampleDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         audio_filename = self.filenames[idx]
+        # print(audio_filename)
         try:
+            # print(audio_filename)
             start_time = time.time()
             audio = self.load_file(audio_filename)
 
@@ -222,7 +255,7 @@ class SampleDataset(torch.utils.data.Dataset):
             info = {}
 
             info["path"] = audio_filename
-
+            
             for root_path in self.root_paths:
                 if root_path in audio_filename:
                     info["relpath"] = path.relpath(audio_filename, root_path)
@@ -236,11 +269,44 @@ class SampleDataset(torch.utils.data.Dataset):
 
             info["load_time"] = end_time - start_time
             ### Roi ####
-            # info["control_signal"] = audio_filename
-            # info["control_signal"] = audio
-            # info["control_signal"] =  self.load_file(audio_filename)
+
             ## Here maybe I can also add a prompt (and not by external function)
-            info["prompt"] = self.prompt_dict[get_file_name_without_extension(info["relpath"])]
+            # info["control_signal"] = audio
+
+            # file_id = get_file_name_without_extension(info["relpath"])
+            
+            file_id = get_file_name_clip_implementation(info["relpath"])
+            # print(f"taking: {file_id}")
+            info["prompt"] = self.prompt_dict[file_id]["track_file_name"]
+            
+            Synchformer_embed = torch.from_numpy(np.load(self.prompt_dict[file_id]["Synchformer_file_path"]))
+            Synchformer_embed = Synchformer_embed.to(audio.dtype)
+            
+            # clip_embed = torch.from_numpy(np.load(self.prompt_dict[file_id]["clip_file_path"]))
+            # clip_embed = clip_embed.to(audio.dtype)
+            
+            # Create the chunk
+            # chunk_intensity = audio.new_zeros([2, self.intensity_len])
+
+            # Copy the audio into the chunk
+            # chunk_intensity[:, :intensity.shape[1]] = intensity[ : ]
+
+            # # assert intensity.shape == audio[0].shape
+            # if len(chunk_intensity.shape) ==1:
+            #     info["intensity_signal"] = chunk_intensity.unsqueeze(0)
+            # else:
+            #     info["intensity_signal"] = chunk_intensity
+            # info["intensity_signal"] = chunk_intensity.unsqueeze(0)
+            
+            # info["clip_signal"] = clip_embed.unsqueeze(0)
+            
+            ## Roi: The npy are from shape (1,240,768) therefore i dont think unsqueeze is neccessary in this case.
+            info["Synchformer_signal"] = Synchformer_embed
+
+
+            ### Trying the same prompt: ###
+            # info["prompt"] = "Musical Instrument"
+            
             ##########
             for custom_md_path in self.custom_metadata_fns.keys():
                 if custom_md_path in audio_filename:

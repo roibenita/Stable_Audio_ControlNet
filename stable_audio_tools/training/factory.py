@@ -87,7 +87,13 @@ def create_training_wrapper_from_config(model_config, model):
             log_loss_info=training_config.get("log_loss_info", False),
             optimizer_configs=training_config.get("optimizer_configs", None),
             pre_encoded=training_config.get("pre_encoded", False),
-            cfg_dropout_prob = training_config.get("cfg_dropout_prob", 0.1),
+            cfg_dropout_prob = training_config.get("cfg_dropout_prob", 0.5),
+            ### Roi_cfg: changing to 0.5 prob for using the txt
+            # cfg_dropout_prob = training_config.get("cfg_dropout_prob", 0.5),
+            # cfg_dropout_prob = training_config.get("cfg_dropout_prob", 0.99),
+            # cfg_dropout_prob = training_config.get("cfg_dropout_prob", 1.0),
+
+
             timestep_sampler = training_config.get("timestep_sampler", "uniform")
         )
     elif model_type == 'diffusion_prior':

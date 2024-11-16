@@ -5,6 +5,47 @@ import torch
 from torch import nn
 from typing import Tuple
 
+
+# class Pad_Intensity(nn.module):
+#     def __init__(self, n_samples: int, sample_rate: int, randomize: bool = True):
+        
+#         super().__init__()
+        
+#         self.n_samples = n_samples
+#         self.sample_rate = sample_rate
+#         self.randomize = randomize
+
+#     def __call__(self, intensity_path: torch.Tensor, audio, seconds_start, seconds_total) -> Tuple[torch.Tensor, float, float, int, int]:
+#         ## Roi: source is the original audio
+#         n_channels, n_samples = source.shape
+        
+#         np.load(self.prompt_dict[file_id]["intensity_file_path"])
+#         # Create the chunk
+#         chunk = audio.new_zeros([n_channels, self.n_samples])
+
+#         # Copy the audio into the chunk
+#         chunk[:, :min(n_samples, self.n_samples)] = source[:, offset:offset + self.n_samples]
+        
+#         # Calculate the start and end times of the chunk in seconds
+#         seconds_start = math.floor(offset / self.sample_rate)
+#         seconds_total = math.ceil(n_samples / self.sample_rate)
+
+#         # Create a mask the same length as the chunk with 1s where the audio is and 0s where it isn't
+#         padding_mask = torch.zeros([self.n_samples])
+#         padding_mask[:min(n_samples, self.n_samples)] = 1
+        
+        
+#         return (
+#             chunk,
+#             t_start,
+#             t_end,
+#             seconds_start,
+#             seconds_total,
+#             padding_mask
+#         )
+
+
+
 class PadCrop(nn.Module):
     def __init__(self, n_samples, randomize=True):
         super().__init__()
@@ -28,16 +69,29 @@ class PadCrop_Normalized_T(nn.Module):
         self.n_samples = n_samples
         self.sample_rate = sample_rate
         self.randomize = randomize
+        
+        ###
+        self.frame_length_sec = 0.64
+        self.frame_step_sec = 0.36
+        ###
+        
 
     def __call__(self, source: torch.Tensor) -> Tuple[torch.Tensor, float, float, int, int]:
-        
+        ## Roi: source is the original audio
         n_channels, n_samples = source.shape
         
+        ## Roi: add changing the n_samples of the audio, by the number of fixed frames.
+        n_samples = self.get_adjusted_signal_length(n_samples)
+        source = source[:, :n_samples]
+        #######
+        # print(n_samples)
         # If the audio is shorter than the desired length, pad it
         upper_bound = max(0, n_samples - self.n_samples)
         
         # If randomize is False, always start at the beginning of the audio
         offset = 0
+        ## this is in case that the given audio is longer then the sample_size (which is 47 sec)
+        ## The upper bound is for the offset element
         if(self.randomize and n_samples > self.n_samples):
             offset = random.randint(0, upper_bound)
 
@@ -68,6 +122,32 @@ class PadCrop_Normalized_T(nn.Module):
             seconds_total,
             padding_mask
         )
+        
+        
+    def get_adjusted_signal_length(self, n_samples):
+        """
+        Given the number of samples in the signal, the sample rate, frame length, and step size,
+        calculates the new valid length of the signal (in samples) that fits the frame structure,
+        ensuring the new length is not longer than the original.
+        """
+        
+        overlap = self.frame_length_sec - self.frame_step_sec
+        # Get the length of the signal in seconds
+        signal_length_sec = n_samples / self.sample_rate
+
+        # Calculate the maximum number of frames that can fit in the signal length
+        K = int((signal_length_sec - overlap) // self.frame_step_sec )
+
+        # Calculate the new length in seconds based on the number of frames
+        new_length_sec = round((K) * self.frame_step_sec,2) + overlap
+
+        # Convert the new length to samples
+        new_n_samples = int(new_length_sec * self.sample_rate)
+        # print(K)
+        return new_n_samples
+        # return K, new_length_samples, new_length_sec
+
+
 
 class PhaseFlipper(nn.Module):
     "Randomly invert the phase of a signal"

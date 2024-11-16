@@ -13,6 +13,11 @@ from stable_audio_tools.models import create_model_from_config
 from stable_audio_tools.models.utils import load_ckpt_state_dict, remove_weight_norm_from_model
 from stable_audio_tools.training import create_training_wrapper_from_config, create_demo_callback_from_config
 from stable_audio_tools.training.utils import copy_state_dict
+import warnings
+
+# Suppress only FutureWarnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
 
 class ExceptionCallback(pl.Callback):
     def on_exception(self, trainer, module, err):
@@ -32,18 +37,20 @@ def main():
 
     args_dict = {
     "seed": "1",
-    "model_config": "/home/rbenita/Projects/Text_to_audio_with_controlnet/stable_audio_open_controlnet/stable-audio-tools/stable_audio_tools/csa/csa_model_config_controlnet.json",
-    "dataset_config": "/home/rbenita/Projects/Text_to_audio_with_controlnet/stable_audio_open_controlnet/stable-audio-tools/stable_audio_tools/configs/dataset_configs/local_dataset_ControlNet.json",
-    "pretrained_ckpt_path": "/home/rbenita/Projects/Text_to_audio_with_controlnet/stable_audio_open_controlnet/stable-audio-tools/pretrained_elemnets/Model/model.safetensors",
+    "model_config": "/home/rbenita/Projects/stable-audio-tools-Synchformer-cond/stable-audio-tools/stable_audio_tools/csa/csa_model_config_controlnet_Synchformer.json",
+    "dataset_config": "/home/rbenita/Projects/stable-audio-tools-Synchformer-cond/stable-audio-tools/stable_audio_tools/configs/dataset_configs/local_dataset_ControlNet_Clip_AudioCaps_Synchformer_train_2_padded_216.json",
+    "pretrained_ckpt_path": "/home/rbenita/pretrained_elemnets/Model/model.safetensors",
     # "remove_pretransform_weight_nor" : "post_load",
-    "batch_size": 1,
+    "batch_size": 8,
     "num_workers": 4,
+    # "batch_size": 1,
+    # "num_workers": 1,
     "remove_pretransform_weight_norm" : "",
     "ckpt_path" : '',
     "pretransform_ckpt_path" : '',
     "name" : 'StableAudioOpen_with_ControlNet',
-    "save_dir" : "/home/rbenita/Projects/Text_to_audio_with_controlnet/stable_audio_open_controlnet/stable-audio-tools/stable_audio_tools/csa/save_dir",
-    "checkpoint_every" : 1000,
+    "save_dir" : "/home/rbenita/Projects/stable-audio-tools-Synchformer-cond/save_dir",
+    "checkpoint_every" : 4000,
     "strategy" : "",
     "num_gpus" : 1,
     "accum_batches": 1,
