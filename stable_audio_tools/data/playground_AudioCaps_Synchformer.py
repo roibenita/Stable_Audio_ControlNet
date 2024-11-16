@@ -147,7 +147,7 @@ def process_videos(csv_file_path, output_prompts_file, root_directory, Synchform
 
 data_set_type = "small_test"
 # Usage example Unnormelized clips
-csv_file_path = f'/home/rbenita/Projects/stable-audio-tools-synchformer-cond-216-emb/Subjective_Evaluation/metadata_files/{data_set_type}.csv'
+csv_file_path = f'/Subjective_Evaluation/metadata_files/{data_set_type}.csv'
 output_prompts_file = f'Subjective_Evaluation/metadata_json/AudioCaps_Metadata_dict_{data_set_type}_synchformer.json'
 root_directory = f"Subjective_Evaluation/{data_set_type}/short_audio_files/all_files"
 # root_directory = f'/home/rbenita/Dataset_Synchformer/{data_set_type}_2/short_audio_files'

@@ -37,8 +37,8 @@ def main():
 
     args_dict = {
     "seed": "1",
-    "model_config": "/home/rbenita/Projects/stable-audio-tools-Synchformer-cond/stable-audio-tools/stable_audio_tools/csa/csa_model_config_controlnet_Synchformer.json",
-    "dataset_config": "/home/rbenita/Projects/stable-audio-tools-Synchformer-cond/stable-audio-tools/stable_audio_tools/configs/dataset_configs/local_dataset_ControlNet_Clip_AudioCaps_Synchformer_train_2_padded_216.json",
+    "model_config": "stable_audio_ControlNet/stable_audio_tools/csa/csa_model_config_controlnet_Synchformer.json",
+    "dataset_config": "stable_audio_ControlNet/stable_audio_tools/configs/dataset_configs/local_dataset_ControlNet_Clip_AudioCaps_Synchformer_train_2_padded_216.json",
     "pretrained_ckpt_path": "/home/rbenita/pretrained_elemnets/Model/model.safetensors",
     # "remove_pretransform_weight_nor" : "post_load",
     "batch_size": 8,
@@ -49,7 +49,7 @@ def main():
     "ckpt_path" : '',
     "pretransform_ckpt_path" : '',
     "name" : 'StableAudioOpen_with_ControlNet',
-    "save_dir" : "/home/rbenita/Projects/stable-audio-tools-Synchformer-cond/save_dir",
+    "save_dir" : "/save_dir",
     "checkpoint_every" : 4000,
     "strategy" : "",
     "num_gpus" : 1,
